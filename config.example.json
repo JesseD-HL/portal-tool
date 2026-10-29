@@ -1,0 +1,8 @@
+{
+  "HANA_HOST": "",
+  "HANA_PORT": "33015",
+  "HANA_USER": "",
+  "HANA_PASSWORD": "",
+  "TOOLS_DIR": "",
+  "STOCK_VIEW": "OFF"
+}

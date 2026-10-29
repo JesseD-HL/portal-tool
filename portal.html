@@ -1,0 +1,1326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Buysheet Portal — Your Company</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: #0F1923; color: #E2E8F0; min-height: 100vh; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; }
+    button { font-family: inherit; }
+    input[type=file] { display: none; }
+    @keyframes pulse { 0%,100%{opacity:.3;transform:scale(1)} 50%{opacity:1;transform:scale(1.3)} }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #1A2535; }
+    ::-webkit-scrollbar-thumb { background: #2D3F55; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useCallback } = React;
+    // The portal talks to whichever address it was opened from, so it keeps working when the server's IP changes
+    // (office wifi, home VPN, ...). Opened as a plain file, it falls back to the machine it is running on.
+    // ?server=http://1.2.3.4:5050 points the page at a server on another machine (when portal.html is opened as a file or hosted elsewhere).
+    const API = (() => {
+      const asked = new URLSearchParams(window.location.search).get("server");
+      if (asked) return asked.replace(/\/+$/, "");
+      return /^https?:$/.test(window.location.protocol) ? window.location.origin : "http://localhost:5050";
+    })();
+    const PAGE_BUILD = "2026-10-14-diag35";   // must equal BUILD in server.py
+
+    const C = {
+      bg:     "#0F1923",
+      panel:  "#162030",
+      card:   "#1C2C3E",
+      border: "#243450",
+      text:   "#E2E8F0",
+      sub:    "#7A93B0",
+      blue:   "#3B82F6",
+      green:  "#22C55E",
+      greenD: "#15803D",
+      red:    "#EF4444",
+      redD:   "#991B1B",
+      amber:  "#F59E0B",
+      amberD: "#92400E",
+      navy:   "#1E3A5F",
+    };
+
+    const TABS = ["PREBUY","ARTICLE CREATE","DELIVERY FLOW","BUYSHEET DATA","REQS","PO CHECK"];
+
+    function StatCard({ label, count, sub, color, note }) {
+      return (
+        <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"20px 24px", minWidth:180 }}>
+          <div style={{ color:C.sub, fontSize:11, fontWeight:600, letterSpacing:1, marginBottom:8 }}>{label}</div>
+          <div style={{ fontSize:32, fontWeight:700, color: count > 0 ? color : C.green }}>{count}</div>
+          <div style={{ color:C.sub, fontSize:12, marginTop:4 }}>{count > 0 ? (note || `${count} need attention`) : sub || "All clear!"}</div>
+        </div>
+      );
+    }
+
+    function Pill({ label, color, bg }) {
+      return <span style={{ display:"inline-block", padding:"2px 9px", borderRadius:4, fontSize:11, fontWeight:600, color, background:bg }}>{label}</span>;
+    }
+    function StatusPill({ status }) {
+      if (status==="✓ EXISTS")  return <Pill label="EXISTS"   color="#16A34A" bg="#052E16"/>;
+      if (status==="✗ MISSING") return <Pill label="MISSING"  color="#EF4444" bg="#3B0000"/>;
+      if (status==="EXISTS")    return <Pill label="EXISTS"   color="#16A34A" bg="#052E16"/>;
+      if (status==="MISSING")   return <Pill label="MISSING"  color="#EF4444" bg="#3B0000"/>;
+      if (status==="MISMATCH")  return <Pill label="MISMATCH" color="#F59E0B" bg="#2D1B00"/>;
+      return <Pill label={status||"—"} color={C.sub} bg={C.card}/>;
+    }
+    function CheckPill({ val }) {
+      const v = val || "—";
+      if (v==="✓")       return <span style={{ color:"#16A34A", fontWeight:700, fontSize:13 }}>✓</span>;
+      if (v.startsWith("✗")) return <span style={{ color:"#EF4444", fontWeight:700, fontSize:11 }}>{v}</span>;
+      if (v.startsWith("⚠")) return <span style={{ color:"#F59E0B", fontSize:11 }}>{v}</span>;
+      if (v.startsWith("ℹ")) return <span style={{ color:"#60A5FA", fontSize:11, fontWeight:600 }}>{v}</span>;
+      return <span style={{ color:C.sub, fontSize:11 }}>{v}</span>;
+    }
+
+    function TabBar({ active, onChange }) {
+      return (
+        <div style={{ display:"flex", borderBottom:`1px solid ${C.border}`, marginBottom:28 }}>
+          {TABS.map(t => (
+            <button key={t} onClick={() => onChange(t)}
+              style={{ padding:"12px 20px", background:"none", border:"none", cursor:"pointer",
+                color: active===t ? C.blue : C.sub,
+                borderBottom: active===t ? `2px solid ${C.blue}` : "2px solid transparent",
+                fontWeight: active===t ? 600 : 400, fontSize:13, letterSpacing:0.5,
+                transition:"all 0.15s" }}>
+              {t}
+            </button>
+          ))}
+        </div>
+      );
+    }
+
+    function RowCounts({ rows }) {
+      const ppk    = rows.filter(r=>r.type==="PPK").length;
+      const os     = rows.filter(r=>r.type==="OS").length;
+      const ecom   = rows.filter(r=>r.type==="ECOM").length;
+      return (
+        <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"16px 20px", marginBottom:24 }}>
+          <div style={{ color:C.sub, fontSize:11, fontWeight:600, letterSpacing:1, marginBottom:12 }}>ROW COUNTS</div>
+          {[["TOTAL",rows.length],["PPK",ppk],["OS",os],["ECOM",ecom]].map(([k,v])=>(
+            <div key={k} style={{ display:"flex", justifyContent:"space-between", padding:"4px 0",
+              borderBottom:`1px solid ${C.border}` }}>
+              <span style={{ color:C.sub, fontSize:13 }}>{k}</span>
+              <span style={{ fontWeight:600, fontSize:13 }}>{v}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // What is already in stock for an open-stock line (from the SAP Cut and Sold export); hover for the split by segment / location.
+    function StockCell({ r }) {
+      const st = r.stock;
+      if (!st) return <span style={{ color:C.sub }}>—</span>;
+      const n = v => Number(v).toLocaleString();
+      const OTHER = { transfer:"in transfer", quality:"in quality inspection", restricted:"restricted", blocked:"blocked", returns:"returns" };
+      const otherText = o => Object.entries(o||{}).filter(([,v]) => v).map(([k,v]) => `${n(v)} ${OTHER[k]||k}`).join(", ");
+      const tip = (st.by||[]).map(b => `${b.segment||"-"} / ${b.sloc||"-"}: ${n(b.inv)} on hand`
+            + (b.ats != null ? ` · ${n(b.ats)} ATS` : "") + (otherText(b.other) ? ` · ${otherText(b.other)}` : "")).join("\n")
+        + ([["On PO", st.on_po], ["In transit", st.in_txt], ["Open orders", st.order], ["Oversold", st.oversold]].some(([,v]) => v != null)
+            ? "\n" + [["On PO", st.on_po], ["In transit", st.in_txt], ["Open orders", st.order], ["Oversold", st.oversold]].filter(([,v]) => v != null).map(([k,v]) => `${k} ${n(v)}`).join(" · ") : "")
+        + (st.source === "hana" ? "\nLive from HANA (unrestricted stock, as on the Cut and Sold report)" : "\nFrom the Cut and Sold export");
+      if (!(st.inv > 0)) return st.other_total > 0
+        ? <span data-testid="stock-cell" title={tip} style={{ color:C.sub, fontSize:11, cursor:"help", whiteSpace:"nowrap" }}>— <span style={{ fontSize:10 }}>· {n(st.other_total)} other</span></span>
+        : <span style={{ color:C.sub }}>—</span>;
+      return (
+        <span data-testid="stock-cell" title={tip} style={{ color:"#60A5FA", fontWeight:600, fontSize:11, cursor:"help", whiteSpace:"nowrap" }}>
+          {n(st.inv)}
+          {st.ats != null && st.ats !== st.inv ? <span style={{ color:C.sub, fontWeight:400 }}> ({n(st.ats)} ATS)</span> : null}
+          {st.other_total > 0 ? <span style={{ color:C.sub, fontWeight:400, fontSize:10 }}> · {n(st.other_total)} other</span> : null}
+          {st.on_po > 0 ? <span style={{ color:C.amber, fontWeight:400 }}> · PO {Number(st.on_po).toLocaleString()}</span> : null}
+        </span>
+      );
+    }
+
+    // For a prepack: its own stock if the report lists it, else how much of its components is in stock and how many packs that could make.
+    function PpkStockCell({ r }) {
+      const st = r.stock;
+      if (!st) return <span style={{ color:C.sub }}>—</span>;
+      const own = st.own;
+      const tip = (own ? `The prepack itself: ${Number(own.inv).toLocaleString()} on hand\n` : "")
+        + (r.components||[]).filter(c => !r.complex || c.code === r.color_code).map(c => `${c.size}: ${Number(c.inv||0).toLocaleString()} on hand (${c.qty} per pack) · ${c.article}`).join("\n");
+      if (own && own.inv > 0) return <span data-testid="stock-cell" title={tip} style={{ color:"#60A5FA", fontWeight:600, fontSize:11, cursor:"help", whiteSpace:"nowrap" }}>{Number(own.inv).toLocaleString()} on hand</span>;
+      if (st.components_in_stock > 0) return (
+        <span data-testid="stock-cell" title={tip} style={{ color:"#60A5FA", fontWeight:600, fontSize:11, cursor:"help", whiteSpace:"nowrap" }}>
+          {st.components_in_stock}/{st.components} sizes<span style={{ color:C.sub, fontWeight:400 }}> · {st.packs > 0 ? `≈${Number(st.packs).toLocaleString()} packs` : "no full pack"}</span>
+        </span>);
+      return <span style={{ color:C.sub }}>—</span>;
+    }
+
+    // "×N": the same result appears on N rows of the DATA sheet (several customers / deliveries); hover to see where.
+    function Repeats({ r }) {
+      if (!r.count || r.count < 2) return null;
+      const who = (r.customers||[]).join(", "), when = (r.deliveries||[]).join(", ");
+      return (
+        <span data-testid="repeats" style={{ color:C.amber, fontSize:9, marginLeft:6, fontWeight:700, cursor:"help" }}
+          title={`The same result on ${r.count} rows of the DATA sheet${who ? "\ncustomers: " + who : ""}${when ? "\ndeliveries: " + when : ""}${r.qty ? "\ntotal qty: " + Number(r.qty).toLocaleString() : ""}`}>×{r.count}</span>
+      );
+    }
+
+    // One chip per check: how many rows passed / failed / were only warned about. Click a chip to see just those rows.
+    function ValidationBoard({ data, filter, setFilter, setViewMode, onReport }) {
+      const S = data?.summary || {};
+      const groups = [
+        { scope:"gen", title:"OPEN STOCK", view:"GENERIC", rows:(data?.generic_unique||data?.generic||[]).length, checks:S.checks_gen||[] },
+        { scope:"ppk", title:"PREPACKS",   view:"PPK",     rows:(data?.ppk_unique||data?.ppk||[]).length,     checks:S.checks_ppk||[] },
+      ].filter(g => g.rows > 0);
+      const all = groups.flatMap(g => g.checks);
+      const bad = all.reduce((a,c)=>a+c.bad, 0), warn = all.reduce((a,c)=>a+c.warn, 0);
+      const inStock = all.filter(c=>c.key==="stock_check").reduce((a,c)=>a+(c.info||0), 0);     // information, not a problem
+      const clean = bad === 0 && warn === 0;
+      return (
+        <div data-testid="validation-board" style={{ background:C.card, border:`1px solid ${clean ? C.greenD : bad ? C.redD : C.amber}`, borderRadius:10, padding:"14px 18px", marginBottom:20 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:12 }}>
+            <div style={{ fontSize:13, fontWeight:700, letterSpacing:0.6 }}>VALIDATION</div>
+            <div style={{ fontSize:13, fontWeight:600, color: clean ? C.green : bad ? C.red : C.amber }}>
+              {clean ? "✓ Every check passes" : `${bad} failure${bad===1?"":"s"} · ${warn} warning${warn===1?"":"s"}`}
+            </div>
+            {inStock > 0 && <div data-testid="in-stock-total" style={{ fontSize:12, color:"#60A5FA", fontWeight:600 }}>ℹ {inStock} line{inStock===1?"":"s"} already in stock</div>}
+            <div style={{ flex:1 }}/>
+            {filter && <button onClick={()=>setFilter(null)} style={{ background:"none", border:`1px solid ${C.border}`, color:C.sub, borderRadius:5, padding:"4px 12px", fontSize:11, cursor:"pointer" }}>Show all rows</button>}
+            <button onClick={onReport} style={{ background:C.navy, border:`1px solid ${C.border}`, color:"#fff", borderRadius:5, padding:"5px 14px", fontSize:11, fontWeight:600, cursor:"pointer" }}>Download validation report →</button>
+          </div>
+          {groups.map(g => (
+            <div key={g.scope} style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:8 }}>
+              <div style={{ width:92, color:C.sub, fontSize:10, fontWeight:700, letterSpacing:0.8 }}>{g.title}</div>
+              {g.checks.filter(c => c.ok + c.bad + c.warn > 0).map(c => {
+                const active = filter && filter.scope===g.scope && filter.key===c.key;
+                const issue = c.bad + c.warn + (c.info||0) > 0;
+                const edge = c.bad ? C.red : c.warn ? C.amber : C.greenD;
+                return (
+                  <button key={c.key} data-testid={`chip-${g.scope}-${c.key}`} disabled={!issue} title={`${c.ok} pass · ${c.bad} fail · ${c.warn} warning · ${c.na} not applicable (${g.title.toLowerCase()} rows)`}
+                    onClick={()=>{ if (active) setFilter(null); else { setFilter({ scope:g.scope, key:c.key, label:c.label }); setViewMode(g.view); } }}
+                    style={{ display:"flex", gap:8, alignItems:"center", padding:"5px 11px", borderRadius:6, fontSize:11, cursor: issue ? "pointer" : "default",
+                      background: active ? "#243450" : "#111B2B", border:`1px solid ${active ? C.blue : edge}`, color:C.text }}>
+                    <span style={{ fontWeight:600 }}>{c.label}</span>
+                    <span style={{ color:C.green }}>✓ {c.ok}</span>
+                    {c.bad > 0  && <span style={{ color:C.red,   fontWeight:700 }}>✗ {c.bad}</span>}
+                    {c.warn > 0 && <span style={{ color:C.amber, fontWeight:700 }}>⚠ {c.warn}</span>}
+                    {c.info > 0 && <span style={{ color:"#60A5FA", fontWeight:700 }}>ℹ {c.info}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // Under an expanded prepack row: the file's ratio against the components SAP holds, size by size.
+    function ComponentPanel({ r }) {
+      const comps = (r.components || []).filter(c => !r.complex || c.code === r.color_code);
+      const fileSz = String(r.buy_sizes || "").split("-").filter(Boolean), fileRt = String(r.buy_ratio || "").split("-").filter(Boolean);
+      const file = {}; fileSz.forEach((s,i)=>{ file[s] = fileRt[i]; });
+      const sap = {}; comps.forEach(c => { sap[c.size] = c; });
+      const sizes = [...fileSz, ...comps.map(c=>c.size).filter(s => !fileSz.includes(s))];
+      const hasS = r.stock !== undefined && r.stock !== null;       // a stock report is loaded
+      const th = { padding:"5px 10px", color:C.sub, fontSize:10, fontWeight:600, textAlign:"left", whiteSpace:"nowrap" };
+      const td = { padding:"5px 10px", fontSize:11, whiteSpace:"nowrap" };
+      const mono = { ...td, fontFamily:"ui-monospace, Menlo, Consolas, monospace" };
+      return (
+        <div data-testid="component-panel" style={{ padding:"10px 16px 14px 28px", background:"#0E1826" }}>
+          <div style={{ fontSize:11, color:C.sub, marginBottom:6 }}>
+            {r.exists==="✓ EXISTS"
+              ? <span>Components of <b style={{ color:C.text }}>{r.ppk_article}</b> in SAP{r.complex ? <span> — color <b style={{ color:C.text }}>{r.color_code}</b> of {[...new Set((r.components||[]).map(c=>c.code))].length} colors</span> : null} · {r.ratio_note ? <span style={{ color:C.red }}>{r.ratio_note}</span> : <span style={{ color:C.green }}>file ratio matches</span>}{hasS && r.stock.components > 0 ? <span style={{ color:"#60A5FA" }}> · stock: {r.stock.components_in_stock} of {r.stock.components} sizes in stock{r.stock.packs > 0 ? `, enough for ≈${Number(r.stock.packs).toLocaleString()} packs` : ""}</span> : null}</span>
+              : <span>{r.ppk_article} is not in SAP, so there is nothing to compare. The file says <b style={{ color:C.text }}>{r.buy_sizes || "—"}</b> / <b style={{ color:C.text }}>{r.buy_ratio || "—"}</b>.</span>}
+          </div>
+          {r.exists==="✓ EXISTS" && (
+            <table>
+              <thead><tr><th style={th}>SIZE</th><th style={th}>FILE QTY</th><th style={th}>SAP QTY</th>{hasS && <><th style={th}>ON HAND</th><th style={th}>ATS</th></>}<th style={th}></th><th style={th}>SAP COMPONENT ARTICLE</th><th style={th}>COLOR CODE</th><th style={th}>COLOR</th></tr></thead>
+              <tbody>
+                {sizes.map(sz => {
+                  const c = sap[sz], f = file[sz], ok = c && String(c.qty)===String(f);
+                  return (
+                    <tr key={sz} style={{ borderTop:`1px solid ${C.border}`, background: ok ? "transparent" : "#2A1114" }}>
+                      <td style={{ ...td, fontWeight:600 }}>{sz}</td>
+                      <td style={mono}>{f ?? "—"}</td>
+                      <td style={mono}>{c ? c.qty : "—"}</td>
+                      {hasS && <><td style={{ ...mono, color: c && c.inv > 0 ? "#60A5FA" : C.sub }}>{c ? Number(c.inv||0).toLocaleString() : "—"}</td><td style={{ ...mono, color:C.sub }}>{c && c.ats != null ? Number(c.ats).toLocaleString() : "—"}</td></>}
+                      <td style={{ ...td, color: ok ? C.green : C.red, fontWeight:700 }}>{ok ? "✓" : "✗"}</td>
+                      <td style={mono}>{c ? c.article : "—"}</td>
+                      <td style={td}>{c ? c.code : "—"}</td>
+                      <td style={{ ...td, color:C.sub }}>{c ? c.color : "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      );
+    }
+
+    function BuysheetTab({ data, setData }) {
+      const [file, setFile]         = useState(null);
+      const [dragging, setDragging] = useState(false);
+      const [loading, setLoading]   = useState(false);
+      const [loadMsg, setLoadMsg]   = useState("");
+      const [error, setError]       = useState(null);
+
+      const onDrop = useCallback((e) => {
+        e.preventDefault(); setDragging(false);
+        const f = e.dataTransfer?.files[0] || e.target.files[0];
+        if (f) { setFile(f); setError(null); }
+      }, []);
+
+      const [viewMode, setViewMode] = React.useState("GENERIC"); // "GENERIC" | "PPK"
+      const [stock, setStock]         = React.useState(null);              // the SAP Cut and Sold export that is loaded on the server
+      const [stockErr, setStockErr]     = React.useState("");
+      const [stockBusy, setStockBusy]   = React.useState(false);
+      const [liveView, setLiveView]   = React.useState(null);              // the HANA view live stock is read from (null = off)
+      React.useEffect(() => { fetch(`${API}/stock`).then(r => r.json()).then(j => { setStock(j.stock || null); setLiveView(j.live || null); }).catch(() => {}); }, []);
+      const live    = data?.summary?.stock?.source === "hana" ? data.summary.stock : null;
+      const liveErr = data?.summary?.stock_error || "";
+      const reloadValidation = async () => { const v = await fetch(`${API}/validation`); if (v.ok) setData(await v.json()); };
+      const uploadStock = async (f) => {
+        if (!f) return;
+        setStockBusy(true); setStockErr("");
+        try {
+          const form = new FormData(); form.append("file", f);
+          const res = await fetch(`${API}/stock`, { method:"POST", body:form });
+          const j = await res.json(); if (!res.ok) throw new Error(j.error || "Could not read that file");
+          setStock(j.stock);
+          if (j.refreshed) await reloadValidation();
+        } catch(e) { setStockErr(e.message); }
+        finally { setStockBusy(false); }
+      };
+      const clearStock = async () => {
+        setStockBusy(true); setStockErr("");
+        try {
+          const j = await (await fetch(`${API}/stock/clear`, { method:"POST" })).json();
+          setStock(null); setFilter(f => f && f.key==="stock_check" ? null : f);
+          if (j.refreshed) await reloadValidation();
+        } catch(e) { setStockErr(e.message); }
+        finally { setStockBusy(false); }
+      };
+      const hasStock = !!data?.summary?.stock;
+      const [filter, setFilter] = React.useState(null);            // { scope, key, label }: show only rows where that check does not pass
+      const [open, setOpen]     = React.useState({});              // prepack rows expanded to show their SAP components
+
+      const validate = async () => {
+        if (!file) return;
+        setLoading(true); setError(null);
+        const msgs = ["Parsing file…","Connecting to HANA…","Validating generics…","Validating PPKs…","Checking prices…","Done!"];
+        let mi = 0; setLoadMsg(msgs[0]);
+        const ticker = setInterval(()=>{ mi=(mi+1)%msgs.length; setLoadMsg(msgs[mi]); }, 1200);
+        try {
+          const form = new FormData(); form.append("file", file);
+          const res = await fetch(`${API}/validate`, { method:"POST", body:form });
+          if (!res.ok) throw new Error(await res.text());
+          const d = await res.json();
+          setData(d);
+        } catch(err) { setError(err.message); }
+        finally { clearInterval(ticker); setLoading(false); setLoadMsg(""); }
+      };
+
+      const download = async (endpoint, filename) => {
+        setLoading(true); setLoadMsg("Preparing download…");
+        try {
+          const res = await fetch(`${API}/${endpoint}`);
+          if (!res.ok) throw new Error(await res.text());
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a"); a.href=url;
+          a.download = filename.replace("DATE", new Date().toLocaleDateString("en-US").replace(/\//g,"-"));
+          a.click();
+        } catch(err) { setError(err.message); }
+        finally { setLoading(false); setLoadMsg(""); }
+      };
+
+      const rows    = [...(data?.generic||[]), ...(data?.ppk||[])];
+      const missing = (data?.summary?.gen_missing||0) + (data?.summary?.ppk_missing||0);
+      const canGen  = rows.length > 0;
+      const gMiss   = (data?.generic||[]).filter(r=>r.status==="✗ MISSING");
+      const nNew    = new Set(gMiss.filter(r=>r.missing_kind==="style").map(r=>r.style)).size;
+      const nAdd    = new Set(gMiss.filter(r=>r.missing_kind!=="style").map(r=>r.style+"|"+r.color_code)).size;
+      const nPpk    = data?.summary?.ppk_missing || 0;
+      const todo    = [nNew && `${nNew} new style${nNew===1?"":"s"}`, nAdd && `${nAdd} color/size add${nAdd===1?"":"s"}`, nPpk && `${nPpk} prepack${nPpk===1?"":"s"}`].filter(Boolean).join(" · ");
+      const genU      = data?.generic_unique || data?.generic || [];   // one entry per DISTINCT finding (the same result on many DATA rows is combined)
+      const ppkU      = data?.ppk_unique || data?.ppk || [];
+      const view      = (!genU.length && ppkU.length) ? "PPK" : viewMode;      // a prepack-only buysheet opens on PPK
+      const failing   = (r, key) => { const v = String(r?.[key] ?? ""); return v.startsWith("✗") || v.startsWith("⚠") || v.startsWith("ℹ"); };
+      const genRows   = genU.filter(r => !(filter && filter.scope==="gen") || failing(r, filter.key));
+      const ppkRows   = ppkU.filter(r => !(filter && filter.scope==="ppk") || failing(r, filter.key));
+
+      return (
+        <div style={{ display:"flex", gap:24 }}>
+          <div style={{ flex:1, minWidth:0 }}>
+            {/* Upload */}
+            <div onDrop={onDrop} onDragOver={e=>{e.preventDefault();setDragging(true);}} onDragLeave={()=>setDragging(false)}
+              onClick={()=>document.getElementById("fi").click()}
+              style={{ border:`1.5px dashed ${dragging?C.blue:C.border}`, borderRadius:10, padding:"32px 24px",
+                textAlign:"center", cursor:"pointer", background:dragging?"#162840":C.card,
+                marginBottom:20, transition:"all 0.2s" }}>
+              <div style={{ fontSize:28, marginBottom:8 }}>📂</div>
+              {file
+                ? <div><div style={{ fontWeight:600 }}>{file.name}</div><div style={{ color:C.sub, fontSize:12, marginTop:2 }}>{(file.size/1024).toFixed(1)} KB · Click to change</div></div>
+                : <div><div style={{ fontWeight:500, marginBottom:2 }}>Drop file here</div><div style={{ color:C.sub, fontSize:12 }}>Prebuy or buysheet · .xlsx or .xlsm</div></div>}
+              <input id="fi" type="file" accept=".xlsx,.xlsm" onChange={onDrop}/>
+            </div>
+
+            {/* What is already in stock: the SAP Cut and Sold export, joined to every article by article number */}
+            <div data-testid="stock-strip" style={{ display:"flex", alignItems:"center", gap:12, flexWrap:"wrap", background:C.card, border:`1px solid ${stock || live ? C.greenD : liveErr ? C.amber : C.border}`, borderRadius:8, padding:"10px 14px", marginBottom:18, fontSize:12 }}>
+              <span style={{ color:C.sub, fontWeight:700, letterSpacing:0.6, fontSize:10 }}>STOCK REPORT</span>
+              {stock
+                ? <span data-testid="stock-summary"><b>{stock.filename}</b> · {Number(stock.article_count).toLocaleString()} articles · {Number(stock.total_inv).toLocaleString()} on hand{stock.as_of ? ` · as of ${stock.as_of}` : ""}{stock.segments && stock.segments.length ? ` · ${stock.segments.join(", ")}` : ""}</span>
+                : live
+                ? <span data-testid="stock-summary"><b>Live from HANA</b> ({live.view}) · {Number(live.article_count).toLocaleString()} articles in stock · {Number(live.total_inv).toLocaleString()} on hand{live.total_other ? ` · ${Number(live.total_other).toLocaleString()} other stock (returns, blocked …)` : ""} · read {live.as_of}</span>
+                : liveErr
+                ? <span data-testid="stock-error" style={{ color:C.amber }}>{liveErr}</span>
+                : <span style={{ color:C.sub }}>{liveView ? `Read live from HANA (${liveView}) when you validate. You can also add a Cut and Sold export.` : "None loaded. Add the SAP Cut and Sold export to see what is already in stock."}</span>}
+              <div style={{ flex:1 }}/>
+              <button onClick={()=>document.getElementById("stock-fi").click()} disabled={stockBusy}
+                style={{ background:C.navy, border:`1px solid ${C.border}`, color:"#fff", borderRadius:5, padding:"5px 14px", fontSize:11, fontWeight:600, cursor:"pointer" }}>
+                {stockBusy ? "Reading…" : stock ? "Replace" : live ? "Use an export instead" : "Add Cut & Sold export"}
+              </button>
+              {stock && <button onClick={clearStock} disabled={stockBusy} style={{ background:"none", border:`1px solid ${C.border}`, color:C.sub, borderRadius:5, padding:"5px 12px", fontSize:11, cursor:"pointer" }}>{liveView ? "Remove (back to live)" : "Remove"}</button>}
+              <input id="stock-fi" type="file" accept=".xlsx,.xlsm,.csv,.txt,.tsv" onChange={e=>{ uploadStock(e.target.files[0]); e.target.value = ""; }}/>
+              {stockErr && <div style={{ width:"100%", color:C.red }}>{stockErr}</div>}
+            </div>
+
+            {error && <div style={{ marginBottom:14, padding:"10px 14px", background:"#3B0000", color:C.red, borderRadius:6, fontSize:13 }}>{error}</div>}
+
+            {/* Step buttons in order */}
+            <div style={{ display:"flex", gap:10, marginBottom:24, alignItems:"center" }}>
+              {/* Step 1: Validate */}
+              <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+                <div style={{ color:C.sub, fontSize:10, fontWeight:600, letterSpacing:0.5 }}>STEP 1</div>
+                <button onClick={validate} disabled={!file||loading}
+                  style={{ padding:"10px 24px", background:file?C.blue:"#243450", color:"#fff",
+                    border:"none", borderRadius:6, fontWeight:600, fontSize:14,
+                    cursor:file?"pointer":"not-allowed", opacity:file?1:0.5 }}>
+                  {loading && !rows.length ? loadMsg : "Validate →"}
+                </button>
+              </div>
+
+              {/* Step 2: Creation templates */}
+              {rows.length > 0 && (
+                <>
+                  <div style={{ color:C.sub, fontSize:18 }}>›</div>
+                  <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+                    <div style={{ color:C.sub, fontSize:10, fontWeight:600, letterSpacing:0.5 }}>STEP 2</div>
+                    <button onClick={()=>download("creation_templates","Creation_Templates_DATE.xlsx")}
+                      style={{ padding:"10px 24px", background:"#92400E", color:"#fff",
+                        border:"none", borderRadius:6, fontWeight:600, fontSize:14, cursor:"pointer" }}>
+                      Get Creation Templates →
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {/* Step 3 and 4 moved to dedicated tabs */}
+
+            </div>
+
+            {/* Summary cards */}
+            {data?.summary && (
+              <div style={{ display:"flex", gap:12, marginBottom:22, flexWrap:"wrap" }}>
+                <StatCard label="OS EXISTS"   count={data.summary.gen_exists||0}  color={C.green} note="size rows in SAP"/>
+                <StatCard label="OS MISSING"  count={data.summary.gen_missing||0} color={C.red} note="size rows to create"/>
+                <StatCard label="PPK EXISTS"  count={data.summary.ppk_exists||0}  color={C.green} note="prepacks in SAP"/>
+                <StatCard label="PPK MISSING" count={data.summary.ppk_missing||0} color={C.red} note="prepacks to create"/>
+                <StatCard label="PPK ISSUES"  count={data.summary.ppk_issues||0}  color={C.amber} note="prepack rows with a ✗"/>
+              </div>
+            )}
+
+            {data?.summary?.checks_gen && <ValidationBoard data={data} filter={filter} setFilter={setFilter} setViewMode={setViewMode} onReport={()=>download("validation_report","Validation_DATE.xlsx")}/>}
+
+            {missing > 0 && (
+              <div style={{ background:"#3B0000", border:`1px solid ${C.redD}`, borderRadius:8, padding:"12px 16px", marginBottom:18, fontSize:13, color:C.red }}>
+                {todo} to create in SAP — see the ARTICLE CREATE tab. The buysheet can still be generated.
+              </div>
+            )}
+
+            {/* Results tables — GENERIC / PPK toggle */}
+            {(genU.length > 0 || ppkU.length > 0) && (
+              <div>
+                {((data.summary?.rows_os_checked||0) + (data.summary?.rows_ppk_checked||0)) > (genU.length + ppkU.length) && (
+                  <div data-testid="dedupe-note" style={{ marginBottom:10, fontSize:11, color:C.sub }}>
+                    {genU.length + ppkU.length} distinct checks from {(data.summary.rows_os_checked||0) + (data.summary.rows_ppk_checked||0)} DATA-sheet rows: identical results are combined.
+                    Hover <span style={{ color:C.amber, fontWeight:700 }}>×N</span> to see which customers and deliveries share a result.
+                  </div>
+                )}
+                {/* Sub-tab toggle */}
+                <div style={{ display:"flex", gap:0, marginBottom:14, background:C.card,
+                  border:`1px solid ${C.border}`, borderRadius:6, padding:3, width:"fit-content" }}>
+                  {[["GENERIC",`OS (${genU.length})`],["PPK",`PPK (${ppkU.length})`]].map(([m,label])=>(
+                    <button key={m} onClick={()=>{ setViewMode(m); setFilter(f => f && f.scope === (m==="GENERIC" ? "gen" : "ppk") ? f : null); }}
+                      style={{ padding:"6px 18px", border:"none", borderRadius:4, fontSize:12, fontWeight:600,
+                        cursor:"pointer", background: view===m ? C.steel : "none",
+                        color: view===m ? "#fff" : C.sub }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {filter && (
+                  <div data-testid="filter-banner" style={{ marginBottom:10, fontSize:12, color:C.amber }}>
+                    Showing {filter.scope==="gen" ? genRows.length : ppkRows.length} of {filter.scope==="gen" ? genU.length : ppkU.length} {filter.key==="stock_check" ? "lines that are already in stock." : <span>lines where <b>{filter.label}</b> does not pass.</span>}
+                  </div>
+                )}
+                {/* GENERIC table */}
+                {view==="GENERIC" && (
+                  <div style={{ background:C.card, borderRadius:8, border:`1px solid ${C.border}`, overflow:"hidden" }}>
+                    <div style={{ overflowX:"auto" }}>
+                      <table>
+                        <thead>
+                          <tr style={{ background:C.navy }}>
+                            {["Style","Code","Size","Status",...(hasStock ? ["Stock"] : []),"Color ✓","Buy $","SAP $","Price ✓","MSRP","Buy Desc","SAP Desc","Desc ✓","PC/CTN ✓","Rounding ✓"].map(h=>(
+                              <th key={h} style={{ padding:"8px 11px", color:C.sub, fontWeight:600, fontSize:10, whiteSpace:"nowrap" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {genRows.map((r,i)=>(
+                            <tr key={i} style={{ borderBottom:`1px solid ${C.border}`, background:i%2===0?C.card:"#162030" }}>
+                              <td style={{ padding:"7px 11px", fontWeight:600, fontSize:12 }}>{r.style}<Repeats r={r}/></td>
+                              <td style={{ padding:"7px 11px", color:C.sub, fontSize:12 }}>{r.color_code}</td>
+                              <td style={{ padding:"7px 11px", fontSize:12 }}>{r.size}</td>
+                              <td style={{ padding:"7px 11px" }} title={r.missing_reason || ""}><StatusPill status={r.status}/>{r.missing_kind ? <span style={{ color:C.sub, fontSize:9, marginLeft:6 }}>{({style:"NEW STYLE", color:"ADD COLOR", size:"ADD SIZE"})[r.missing_kind]}</span> : null}</td>
+                              {hasStock && <td style={{ padding:"7px 11px" }}><StockCell r={r}/></td>}
+                              <td style={{ padding:"7px 11px" }} title={r.color_note || (r.sap_color ? `SAP color: ${r.sap_color}` : "")}><CheckPill val={r.color_check}/></td>
+                              <td style={{ padding:"7px 11px", fontSize:11 }}>{r.buy_price ? `$${parseFloat(r.buy_price).toFixed(2)}` : "—"}</td>
+                              <td style={{ padding:"7px 11px", fontSize:11 }}  title={r.price_trace || ""}>{r.sap_price ? `$${parseFloat(r.sap_price).toFixed(2)}` : "—"}{r.price_source==="generic" ? <span style={{ color:C.sub, fontSize:9, marginLeft:4 }}>GEN</span> : null}</td>
+                              <td style={{ padding:"7px 11px" }}><CheckPill val={r.price_check}/></td>
+                              <td style={{ padding:"7px 11px", fontSize:11 }} title="Buy-side MSRP. Not checked against SAP yet.">{r.buy_msrp ? `$${parseFloat(r.buy_msrp).toFixed(2)}` : "—"}</td>
+                              <td style={{ padding:"7px 11px", fontSize:10, color:C.sub, maxWidth:160, overflow:"hidden", textOverflow:"ellipsis" }}>{r.buy_desc}</td>
+                              <td style={{ padding:"7px 11px", fontSize:10, color:C.sub, maxWidth:160, overflow:"hidden", textOverflow:"ellipsis" }}>{r.sap_desc}</td>
+                              <td style={{ padding:"7px 11px" }} title={r.desc_note || ""}><CheckPill val={r.desc_check}/></td>
+                              <td style={{ padding:"7px 11px" }} title={r.pc_ctn_note || ""}><CheckPill val={r.pc_ctn_check}/></td>
+                              <td style={{ padding:"7px 11px" }}><CheckPill val={r.round_check}/></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* PPK table */}
+                {view==="PPK" && (
+                  <div style={{ background:C.card, borderRadius:8, border:`1px solid ${C.border}`, overflow:"hidden" }}>
+                    {(() => {
+                      const found = ppkU.filter(r=>r.exists==="✓ EXISTS");
+                      const match = found.filter(r=>r.ratio_check==="✓" && r.sizes_check==="✓").length;
+                      const diff  = found.filter(r=>String(r.ratio_check).startsWith("✗") || String(r.sizes_check).startsWith("✗")).length;
+                      return (
+                        <div style={{ padding:"10px 14px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:22, fontSize:12 }}>
+                          <span style={{ color:C.green, fontWeight:600 }}>{match} ratio{match===1?"":"s"} match SAP</span>
+                          <span style={{ color: diff ? C.red : C.sub, fontWeight:600 }}>{diff} differ</span>
+                          <span style={{ color:C.sub }}>{ppkU.length - found.length} not in SAP (no ratio to compare)</span>
+                        </div>
+                      );
+                    })()}
+                    <div style={{ overflowX:"auto" }}>
+                      <table>
+                        <thead>
+                          <tr style={{ background:C.navy }}>
+                            {["PPK Article","Code","Exists",...(hasStock ? ["Stock"] : []),"FILE sizes · ratio","SAP sizes · ratio","Ratio ✓","Sizes ✓","PC/PPK ✓","Buy $","SAP $","Price ✓","MSRP","Buy Color","SAP Color","Color ✓","CC ✓","Desc ✓","Round ✓"].map(h=>(
+                              <th key={h} style={{ padding:"8px 11px", color:C.sub, fontWeight:600, fontSize:10, whiteSpace:"nowrap" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ppkRows.map((r,i)=>{
+                            const rowKey = r.ppk_article + "|" + r.color_code;
+                            const ratioOk = r.ratio_check==="✓" && r.sizes_check==="✓";
+                            const ratioBad = String(r.ratio_check).startsWith("✗") || String(r.sizes_check).startsWith("✗");
+                            const mono = { fontFamily:"ui-monospace, Menlo, Consolas, monospace", fontSize:11, whiteSpace:"nowrap" };
+                            return (
+                            <React.Fragment key={i}>
+                            <tr data-testid="ppk-row" style={{ borderBottom:`1px solid ${C.border}`, background:i%2===0?C.card:"#162030" }}>
+                              <td onClick={()=>setOpen(o=>({ ...o, [rowKey]: !o[rowKey] }))} title="Click to see the components SAP holds" style={{ padding:"7px 11px", fontWeight:600, fontSize:11, cursor:"pointer", whiteSpace:"nowrap" }}><span style={{ color:C.sub, marginRight:6 }}>{open[rowKey] ? "▾" : "▸"}</span>{r.ppk_article}{r.complex ? <span style={{ color:C.blue, fontSize:9, marginLeft:6 }}>COMPLEX</span> : null}<Repeats r={r}/></td>
+                              <td style={{ padding:"7px 11px", color:C.sub, fontSize:11 }}>{r.color_code}</td>
+                              <td style={{ padding:"7px 11px" }} title={r.match_note || ""}><StatusPill status={r.exists}/>{r.match_note && r.ppk_article !== r.prebuy_article ? <span style={{ color:C.sub, fontSize:9, marginLeft:6 }}>AS {r.ppk_article}</span> : null}</td>
+                              {hasStock && <td style={{ padding:"7px 11px" }}><PpkStockCell r={r}/></td>}
+                              <td style={{ padding:"7px 11px", ...mono }}>{r.buy_sizes || "—"}<br/><span style={{ color:C.sub }}>{r.buy_ratio || "—"}</span></td>
+                              <td style={{ padding:"7px 11px", ...mono, background: ratioOk ? "#0F2A1A" : ratioBad ? "#3B0000" : "transparent" }} title={r.ratio_note || ""}>{r.sap_sizes || "—"}<br/><span style={{ color: ratioBad ? C.red : C.sub }}>{r.sap_ratio || "—"}</span></td>
+                              <td style={{ padding:"7px 11px" }} title={r.ratio_note || ""}><CheckPill val={r.ratio_check}/>{r.ratio_note ? <div style={{ color:C.red, fontSize:10, marginTop:3, whiteSpace:"nowrap" }}>{r.ratio_note}</div> : null}</td>
+                              <td style={{ padding:"7px 11px" }}><CheckPill val={r.sizes_check}/></td>
+                              <td style={{ padding:"7px 11px" }}><CheckPill val={r.pc_ppk_check}/></td>
+                              <td style={{ padding:"7px 11px", fontSize:11 }}>{r.buy_price ? `$${parseFloat(r.buy_price).toFixed(2)}` : "—"}</td>
+                              <td style={{ padding:"7px 11px", fontSize:11 }} title={r.price_trace || ""}>{r.sap_price ? `$${parseFloat(r.sap_price).toFixed(2)}` : "—"}</td>
+                              <td style={{ padding:"7px 11px" }}><CheckPill val={r.price_check}/></td>
+                              <td style={{ padding:"7px 11px", fontSize:11 }} title="Buy-side MSRP. Not checked against SAP yet.">{r.buy_msrp ? `$${parseFloat(r.buy_msrp).toFixed(2)}` : "—"}</td>
+                              <td style={{ padding:"7px 11px", fontSize:10, color:C.sub }}>{r.buy_color}</td>
+                              <td style={{ padding:"7px 11px", fontSize:10, color:C.sub }}>{r.sap_color}</td>
+                              <td style={{ padding:"7px 11px" }} title={r.color_note || ""}><CheckPill val={r.color_check}/></td>
+                              <td style={{ padding:"7px 11px" }}><CheckPill val={r.cc_check}/></td>
+                              <td style={{ padding:"7px 11px" }} title={r.desc_note || ""}><CheckPill val={r.desc_check}/></td>
+                              <td style={{ padding:"7px 11px" }}><CheckPill val={r.round_check}/></td>
+                            </tr>
+                            {open[rowKey] && <tr><td colSpan={18} style={{ padding:0 }}><ComponentPanel r={r}/></td></tr>}
+                            </React.Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function ArticleCreateTab({ data }) {
+      const genRows = data?.generic || [];
+      const ppkRows = data?.ppk || [];
+      const uniq   = (arr, key) => [...new Map(arr.map(r=>[key(r), r])).values()];
+      const plural = (n, w) => `${n} ${w}${n===1?"":"s"}`;
+
+      // Rows that are not in SAP, split by WHAT is missing: a whole style, or a color / size on a style SAP already has
+      const missing   = genRows.filter(r=>r.status==="✗ MISSING");
+      const newStyles = [...missing.filter(r=>r.missing_kind==="style").reduce((m, r)=>{
+        const e = m.get(r.style) || { style:r.style, colors:[], reason:r.missing_reason };
+        if (!e.colors.includes(r.color_code)) e.colors.push(r.color_code);
+        return m.set(r.style, e);
+      }, new Map()).values()].map(e=>({ ...e, detail:`${plural(e.colors.length, "color")}: ${e.colors.join(", ")}` }));
+      const adds = [...missing.filter(r=>r.missing_kind!=="style").reduce((m, r)=>{
+        const k = r.style+"|"+r.color_code;
+        const e = m.get(k) || { style:r.style, color_code:r.color_code, buy_color:r.buy_color, kind:r.missing_kind, code_in_sap:r.code_in_sap, sizes:[], reason:r.missing_reason };
+        e.sizes.push(r.size);
+        return m.set(k, e);
+      }, new Map()).values()].map(e=>({ ...e, detail: e.kind==="color"
+        ? `new color on this style${e.code_in_sap ? " (code already in SAP)" : " (code not on any article yet)"}`
+        : `missing ${e.sizes.length===1 ? "size" : "sizes"}: ${e.sizes.join(", ")}` }));
+      const colorIssues = uniq([...genRows,...ppkRows].filter(r=>r.color_check && r.color_check.startsWith("✗")), r=>(r.style||r.ppk_article)+"|"+r.color_code)
+                            .map(r=>({ ...r, detail:r.color_check, reason:r.color_note||"" }));
+      const descIssues  = uniq([...genRows,...ppkRows].filter(r=>r.desc_check && r.desc_check.startsWith("✗")), r=>(r.style||r.ppk_article))
+                            .map(r=>({ style:r.style, ppk_article:r.ppk_article,
+                                       detail:`file "${r.buy_desc||""}" → SAP "${r.sap_desc||""}"${r.desc_note ? ` (${r.desc_note})` : ""}`,
+                                       reason:r.desc_note||"" }));
+      const missingPPKs = [...ppkRows.filter(r=>r.exists==="✗ MISSING").reduce((m, r)=>{
+        const e = m.get(r.ppk_article) || { ...r, colors:[], buy_color:"", color_code:"" };
+        e.colors.push(r.color_code); return m.set(r.ppk_article, e);
+      }, new Map()).values()].map(e=>({ ...e, detail: e.complex ? `complex prepack, ${e.colors.length} colors: ${e.colors.join(", ")}` : "prepack not in SAP", reason:"" }));
+
+      const dlCSV = (items, filename) => {
+        if (!items.length) return;
+        const q = v => `"${String(v||"").replace(/"/g, '""')}"`;
+        const csv = [["Article","Color Code","Color","Detail","Reason"].join(","), ...items.map(r =>
+          [r.style||r.ppk_article, r.color_code||(r.colors||[]).join(" "), r.buy_color||"", q(r.detail), q(r.reason)].join(",")
+        )].join("\n");
+        const blob = new Blob([csv], {type:"text/csv"});
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a"); a.href=url; a.download=filename; a.click();
+      };
+
+      if (!genRows.length && !ppkRows.length) return (
+        <div style={{ textAlign:"center", padding:"80px 0", color:C.sub }}>
+          <div style={{ fontSize:32, marginBottom:12 }}>📋</div>
+          <div style={{ fontSize:16, fontWeight:500, marginBottom:6 }}>No validation data yet</div>
+          <div style={{ fontSize:13 }}>Run validation on the PREBUY tab first</div>
+        </div>
+      );
+
+      return (
+        <div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20, marginBottom:28 }}>
+            {[
+              { label:"GENERICS",      count:newStyles.length,   sub:"styles not in SAP - create the generic",             color:C.red,   items:newStyles,   file:"new_styles.csv" },
+              { label:"GENERICS ADDS", count:adds.length,        sub:"colors or sizes to add to styles already in SAP",    color:C.amber, items:adds,        file:"generic_adds.csv" },
+              { label:"COLOR ISSUES",  count:colorIssues.length, sub:"color descriptions that differ from SAP",            color:C.amber, items:colorIssues, file:"color_issues.csv" },
+              { label:"DESCRIPTION",   count:descIssues.length,  sub:"style descriptions that differ from SAP",            color:C.amber, items:descIssues,  file:"desc_issues.csv" },
+              { label:"PREPACKS",      count:missingPPKs.length, sub:"prepacks not in SAP",                                color:C.red,   items:missingPPKs, file:"missing_ppks.csv" },
+            ].map(({ label, count, sub, color, items, file }) => (
+              <div key={label} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"20px 24px" }}>
+                <div style={{ color:C.sub, fontSize:11, fontWeight:600, letterSpacing:1, marginBottom:8 }}>{label}</div>
+                <div style={{ fontSize:36, fontWeight:700, color: count > 0 ? color : C.green }}>{count}</div>
+                <div style={{ color:C.sub, fontSize:12, marginTop:4, marginBottom:16 }}>{count > 0 ? sub : "All clear!"}</div>
+                {count > 0 && (
+                  <button onClick={()=>dlCSV(items, file)}
+                    style={{ padding:"7px 16px", background:C.navy, color:"#fff", border:`1px solid ${C.border}`,
+                      borderRadius:5, fontSize:12, fontWeight:600, cursor:"pointer" }}>
+                    Download list →
+                  </button>
+                )}
+                {count > 0 && (
+                  <div style={{ marginTop:14, maxHeight:140, overflowY:"auto" }}>
+                    {items.slice(0,8).map((r,i)=>(
+                      <div key={i} title={r.reason||""} style={{ padding:"4px 0", borderBottom:`1px solid ${C.border}`, fontSize:12, display:"flex", justifyContent:"space-between", gap:12 }}>
+                        <span style={{ fontWeight:600 }}>{r.style||r.ppk_article}</span>
+                        <span style={{ color:C.sub, textAlign:"right" }}>{r.color_code ? `${r.color_code} · ` : ""}{r.buy_color ? `${r.buy_color} · ` : ""}{r.detail||""}</span>
+                      </div>
+                    ))}
+                    {items.length > 8 && <div style={{ color:C.sub, fontSize:11, marginTop:6 }}>+{items.length-8} more</div>}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function DeliveryFlowTab() {
+      const [mode, setMode]       = React.useState("manual"); // "manual" | "file"
+      const [splitType, setSplitType] = React.useState("OS"); // "OS" | "PPK"
+      const blank = () => ({ style:"", color:"", ratio:"", qty:"" });
+      const [lines, setLines]     = React.useState([blank()]);
+      const [del1, setDel1]       = React.useState("");
+      const [del2, setDel2]       = React.useState("");
+      const [del1Date, setDel1Date] = React.useState("");
+      const [del2Date, setDel2Date] = React.useState("");
+      const [file, setFile]       = React.useState(null);
+      const [results, setResults] = React.useState(null);
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError]     = React.useState("");
+
+      const addLine    = () => setLines([...lines, blank()]);
+      const removeLine = (i) => setLines(lines.length > 1 ? lines.filter((_,li)=>li!==i) : [blank()]);
+      const updateLine = (i, field, val) => setLines(lines.map((l,li)=> li===i ? { ...l, [field]:val } : l));
+
+      // one line's total split proportionally; prepacks are split in WHOLE PACKS so each delivery ships complete packs
+      const splitLine = (l, prop) => {
+        const qty  = parseInt(l.qty, 10);
+        const rsum = splitType==="PPK" ? l.ratio.split(/[-\s,]+/).filter(Boolean).reduce((a,b)=>a+(parseInt(b,10)||0),0) : 0;
+        if (splitType==="PPK" && rsum) {
+          const packs = qty / rsum;
+          const p1 = Math.round(packs*prop);
+          return { packs, p1, p2: packs - p1, d1: p1*rsum, d2: qty - p1*rsum, whole: Number.isInteger(packs) };
+        }
+        const d1 = Math.round(qty*prop);
+        return { packs:null, d1, d2: qty - d1, whole:true };
+      };
+
+      const calculate = () => {
+        setError(""); setResults(null);
+        const d1 = parseInt(del1, 10); const d2 = parseInt(del2, 10);
+        if (!d1 || !d2) { setError("Enter both delivery quantities"); return; }
+        const prop = d1 / (d1 + d2);
+        const rows = [], problems = [];
+        lines.forEach((l, i) => {
+          if (!l.style && !l.color && !l.qty) return;
+          if (!l.style || !l.qty) { problems.push(`Line ${i+1}: style and total qty are required`); return; }
+          if (!/^\d+$/.test(String(l.qty).trim())) { problems.push(`Line ${i+1}: total qty must be a whole number`); return; }
+          if (splitType==="PPK" && !l.ratio) { problems.push(`Line ${i+1}: a prepack needs its ratio`); return; }
+          const sp = splitLine(l, prop);
+          if (!sp.whole) problems.push(`Line ${i+1}: ${l.qty} pieces is not a whole number of packs (ratio totals ${l.qty/sp.packs})`);
+          rows.push({ style:l.style.trim().toUpperCase(), color:l.color.trim().toUpperCase(), ratio:l.ratio.trim(), qty:parseInt(l.qty,10), ...sp });
+        });
+        if (problems.length) { setError(problems.join("  ·  ")); return; }
+        if (!rows.length) { setError("Add at least one line"); return; }
+        setResults({ rows, d1, d2, total:d1+d2, del1Date, del2Date });
+      };
+
+      const calculateFromFile = async () => {
+        if (!file) return;
+        setError(""); setResults(null); setLoading(true);
+        const d1 = parseInt(del1, 10); const d2 = parseInt(del2, 10);
+        if (!d1 || !d2) { setError("Enter both delivery quantities"); setLoading(false); return; }
+        try {
+          const form = new FormData(); form.append("file", file);
+          form.append("del1", d1); form.append("del2", d2);
+          const res = await fetch(`${API}/delivery_split`, { method:"POST", body:form });
+          if (!res.ok) { const t = await res.text(); let m = t; try { m = JSON.parse(t).error || t; } catch(e) {} throw new Error(m); }
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a"); a.href=url;
+          a.download = `Delivery_Split_${new Date().toLocaleDateString("en-US").replace(/\//g,"-")}.xlsx`;
+          a.click();
+        } catch(err) { setError(err.message); }
+        finally { setLoading(false); }
+      };
+
+      const copyResults = () => {
+        if (!results) return;
+        const head = splitType==="PPK" ? ["STYLE","COLOR","RATIO","TOTAL","PACKS","DEL 1","DEL 1 PACKS","DEL 2","DEL 2 PACKS"] : ["STYLE","COLOR","TOTAL","DEL 1","DEL 2"];
+        const body = results.rows.map(r => splitType==="PPK" ? [r.style,r.color,r.ratio,r.qty,r.packs,r.d1,r.p1,r.d2,r.p2] : [r.style,r.color,r.qty,r.d1,r.d2]);
+        navigator.clipboard && navigator.clipboard.writeText([head, ...body].map(r=>r.join("\t")).join("\n"));
+      };
+
+      const inputStyle = { padding:"9px 14px", background:C.card, border:`1px solid ${C.border}`,
+        borderRadius:6, color:C.text, fontSize:14, outline:"none" };
+      const fields = splitType==="PPK"
+        ? [["style","e.g. CFW271SH01"],["color","e.g. S470 or AZURE BLUE"],["ratio","e.g. 1-2-2-1"],["qty","pieces"]]
+        : [["style","e.g. CFW271SH01"],["color","e.g. S470 or AZURE BLUE"],["qty","units"]];
+      const grid = splitType==="PPK" ? "1.6fr 1.6fr 1fr 1fr auto" : "1.6fr 1.6fr 1fr auto";
+      const rGrid = splitType==="PPK" ? "1.4fr 1.4fr 1fr 1fr 0.8fr 1fr 1fr" : "1.4fr 1.4fr 1fr 1fr 1fr";
+      const dl = (n, d) => `DEL ${n}${d ? " (" + d + ")" : ""}`;
+      const rHead = splitType==="PPK" ? ["STYLE","COLOR","RATIO","TOTAL","PACKS",dl(1,del1Date),dl(2,del2Date)] : ["STYLE","COLOR","TOTAL",dl(1,del1Date),dl(2,del2Date)];
+
+      return (
+        <div>
+          <div style={{ fontSize:16, fontWeight:600, marginBottom:16 }}>Delivery Split</div>
+
+          {/* Mode toggle */}
+          <div style={{ display:"flex", gap:0, marginBottom:24, background:C.card,
+            border:`1px solid ${C.border}`, borderRadius:6, padding:3, width:"fit-content" }}>
+            {[["manual","Manual Entry"],["file","Upload File"]].map(([m,label])=>(
+              <button key={m} onClick={()=>{ setMode(m); setResults(null); setError(""); }}
+                style={{ padding:"7px 20px", border:"none", borderRadius:4, fontSize:13, fontWeight:600,
+                  cursor:"pointer", background: mode===m ? C.blue : "none",
+                  color: mode===m ? "#fff" : C.sub }}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* PPK / OS toggle — manual mode only */}
+          {mode === "manual" && (
+            <div style={{ display:"flex", gap:0, marginBottom:20, background:C.card,
+              border:`1px solid ${C.border}`, borderRadius:6, padding:3, width:"fit-content" }}>
+              {[["OS","Open Stock"],["PPK","Prepack"]].map(([t,label])=>(
+                <button key={t} onClick={()=>{ setSplitType(t); setResults(null); setError(""); }}
+                  style={{ padding:"6px 18px", border:"none", borderRadius:4, fontSize:13, fontWeight:600,
+                    cursor:"pointer", background: splitType===t ? C.steel : "none",
+                    color: splitType===t ? "#fff" : C.sub }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Del 1 / Del 2 inputs — always shown */}
+          <div style={{ display:"flex", gap:16, marginBottom:20, flexWrap:"wrap" }}>
+            <div>
+              <div style={{ color:C.sub, fontSize:11, fontWeight:600, letterSpacing:0.5, marginBottom:6 }}>DEL 1 QTY</div>
+              <input value={del1} onChange={e=>setDel1(e.target.value)} placeholder="0"
+                style={{ ...inputStyle, width:140 }}/>
+            </div>
+            <div>
+              <div style={{ color:C.sub, fontSize:11, fontWeight:600, letterSpacing:0.5, marginBottom:6 }}>DEL 1 DATE</div>
+              <input type="date" value={del1Date} onChange={e=>setDel1Date(e.target.value)}
+                style={{ ...inputStyle, width:160 }}/>
+            </div>
+            <div style={{ width:1, background:C.border, margin:"0 4px" }}></div>
+            <div>
+              <div style={{ color:C.sub, fontSize:11, fontWeight:600, letterSpacing:0.5, marginBottom:6 }}>DEL 2 QTY</div>
+              <input value={del2} onChange={e=>setDel2(e.target.value)} placeholder="0"
+                style={{ ...inputStyle, width:140 }}/>
+            </div>
+            <div>
+              <div style={{ color:C.sub, fontSize:11, fontWeight:600, letterSpacing:0.5, marginBottom:6 }}>DEL 2 DATE</div>
+              <input type="date" value={del2Date} onChange={e=>setDel2Date(e.target.value)}
+                style={{ ...inputStyle, width:160 }}/>
+            </div>
+          </div>
+          {mode === "manual" && del1 && del2 && parseInt(del1,10) > 0 && parseInt(del2,10) > 0 && (
+            <div style={{ color:C.sub, fontSize:12, marginBottom:14 }}>
+              Every line is split {Math.round(100*parseInt(del1,10)/(parseInt(del1,10)+parseInt(del2,10)))}% / {100-Math.round(100*parseInt(del1,10)/(parseInt(del1,10)+parseInt(del2,10)))}%
+              {splitType==="PPK" ? ", rounded to whole packs." : "."}
+            </div>
+          )}
+
+          {/* Manual mode */}
+          {mode === "manual" && (
+            <div>
+              <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden", marginBottom:16 }}>
+                <div style={{ padding:"10px 14px", background:C.navy, display:"grid", gridTemplateColumns:grid, gap:12 }}>
+                  {(splitType==="PPK" ? ["STYLE","COLOR","RATIO","TOTAL QTY (PIECES)",""] : ["STYLE","COLOR","TOTAL QTY",""]).map((h,i)=>(
+                    <div key={i} style={{ color:C.sub, fontSize:11, fontWeight:600 }}>{h}</div>
+                  ))}
+                </div>
+                {lines.map((l,i)=>(
+                  <div key={i} style={{ padding:"8px 14px", borderBottom:`1px solid ${C.border}`,
+                    display:"grid", gridTemplateColumns:grid, gap:12, alignItems:"center" }}>
+                    {fields.map(([f,ph])=>(
+                      <input key={f} value={l[f]} onChange={e=>updateLine(i,f,e.target.value)} placeholder={ph}
+                        style={{ ...inputStyle, padding:"7px 10px", fontSize:13 }}/>
+                    ))}
+                    <button onClick={()=>removeLine(i)} title="Remove this line"
+                      style={{ background:"none", border:"none", color:C.red, cursor:"pointer", fontSize:16 }}>✕</button>
+                  </div>
+                ))}
+                <div style={{ padding:"10px 14px" }}>
+                  <button onClick={addLine}
+                    style={{ background:"none", border:`1px dashed ${C.border}`, color:C.sub,
+                      borderRadius:5, padding:"6px 14px", cursor:"pointer", fontSize:12 }}>+ Add line</button>
+                </div>
+              </div>
+              {error && <div style={{ color:C.red, fontSize:13, marginBottom:12 }}>{error}</div>}
+              <button onClick={calculate}
+                style={{ padding:"10px 24px", background:C.blue, color:"#fff",
+                  border:"none", borderRadius:6, fontWeight:600, fontSize:14, cursor:"pointer" }}>
+                Calculate →
+              </button>
+            </div>
+          )}
+
+          {/* File mode */}
+          {mode === "file" && (
+            <div>
+              <div onClick={()=>document.getElementById("split-fi").click()}
+                style={{ border:`1.5px dashed ${C.border}`, borderRadius:8, padding:"28px 24px",
+                  textAlign:"center", cursor:"pointer", background:C.card, marginBottom:16 }}>
+                <div style={{ fontSize:24, marginBottom:6 }}>📂</div>
+                {file
+                  ? <div style={{ fontWeight:600 }}>{file.name}<span style={{ color:C.sub, fontSize:12, marginLeft:8 }}>{(file.size/1024).toFixed(1)} KB</span></div>
+                  : <div><div style={{ fontWeight:500 }}>Drop split file here</div><div style={{ color:C.sub, fontSize:12 }}>.xlsx — styles, colors, ratios, quantities</div></div>}
+                <input id="split-fi" type="file" accept=".xlsx"
+                  onChange={e=>{ setFile(e.target.files[0]); setError(""); }}/>
+              </div>
+              {error && <div style={{ color:C.red, fontSize:13, marginBottom:12 }}>{error}</div>}
+              <button onClick={calculateFromFile} disabled={!file||loading}
+                style={{ padding:"10px 24px", background:file?C.blue:"#243450", color:"#fff",
+                  border:"none", borderRadius:6, fontWeight:600, fontSize:14,
+                  cursor:file?"pointer":"not-allowed", opacity:file?1:0.5 }}>
+                {loading ? "Calculating…" : "Calculate & Download →"}
+              </button>
+            </div>
+          )}
+
+          {/* Results — manual mode only */}
+          {results && mode==="manual" && (
+            <div style={{ marginTop:24, background:C.card, border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
+              <div style={{ padding:"10px 14px", background:C.navy, display:"grid", gridTemplateColumns:rGrid, gap:12 }}>
+                {rHead.map((h,i)=>(<div key={i} style={{ color:C.sub, fontSize:11, fontWeight:600 }}>{h}</div>))}
+              </div>
+              {results.rows.map((r,i)=>(
+                <div key={i} style={{ padding:"9px 14px", borderBottom:`1px solid ${C.border}`,
+                  display:"grid", gridTemplateColumns:rGrid, gap:12, fontSize:13 }}>
+                  <div style={{ fontWeight:600 }}>{r.style}</div>
+                  <div style={{ color:C.sub }}>{r.color || "—"}</div>
+                  {splitType==="PPK" && <div style={{ color:C.sub }}>{r.ratio}</div>}
+                  <div>{r.qty.toLocaleString()}</div>
+                  {splitType==="PPK" && <div style={{ color:C.sub }}>{r.packs.toLocaleString()}</div>}
+                  <div style={{ color:C.green, fontWeight:600 }}>{r.d1.toLocaleString()}{splitType==="PPK" && <span style={{ color:C.sub, fontWeight:400, fontSize:11 }}> · {r.p1} pk</span>}</div>
+                  <div style={{ color:C.blue, fontWeight:600 }}>{r.d2.toLocaleString()}{splitType==="PPK" && <span style={{ color:C.sub, fontWeight:400, fontSize:11 }}> · {r.p2} pk</span>}</div>
+                </div>
+              ))}
+              <div style={{ padding:"9px 14px", display:"grid", gridTemplateColumns:rGrid, gap:12, fontSize:13, fontWeight:700, background:C.navy }}>
+                <div>TOTAL</div><div></div>
+                {splitType==="PPK" && <div></div>}
+                <div>{results.rows.reduce((a,r)=>a+r.qty,0).toLocaleString()}</div>
+                {splitType==="PPK" && <div>{results.rows.reduce((a,r)=>a+r.packs,0).toLocaleString()}</div>}
+                <div style={{ color:C.green }}>{results.rows.reduce((a,r)=>a+r.d1,0).toLocaleString()}</div>
+                <div style={{ color:C.blue }}>{results.rows.reduce((a,r)=>a+r.d2,0).toLocaleString()}</div>
+              </div>
+              <div style={{ padding:"10px 14px", display:"flex", gap:12, alignItems:"center" }}>
+                <button onClick={copyResults} style={{ padding:"7px 16px", background:C.navy, color:"#fff", border:`1px solid ${C.border}`, borderRadius:5, fontSize:12, fontWeight:600, cursor:"pointer" }}>Copy table →</button>
+                <span style={{ color:C.sub, fontSize:12 }}>Pastes straight into Excel.</span>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+        function BuysheetDataTab({ data }) {
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError]     = React.useState(null);
+      const genRows = data?.generic || [];
+      const ppkRows = data?.ppk || [];
+      const hasData = genRows.length > 0 || ppkRows.length > 0;
+      const missing = genRows.filter(r=>r.status==="✗ MISSING").length + ppkRows.filter(r=>r.exists==="✗ MISSING").length;
+      const canGen  = hasData;
+      const rows = genRows;
+
+      const download = async () => {
+        setLoading(true); setError(null);
+        try {
+          const res = await fetch(`${API}/generate`);
+          if (!res.ok) throw new Error(await res.text());
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a"); a.href=url;
+          a.download = `Buysheet_DATA_${new Date().toLocaleDateString("en-US").replace(/\//g,"-")}.xlsx`;
+          a.click();
+        } catch(err) { setError(err.message); }
+        finally { setLoading(false); }
+      };
+
+      if (!rows.length) return (
+        <div style={{ textAlign:"center", padding:"80px 0", color:C.sub }}>
+          <div style={{ fontSize:32, marginBottom:12 }}>📊</div>
+          <div style={{ fontSize:16, fontWeight:500, marginBottom:6 }}>No validation data yet</div>
+          <div style={{ fontSize:13 }}>Run validation on the PREBUY tab first</div>
+        </div>
+      );
+
+      return (
+        <div>
+          <div style={{ marginBottom:24 }}>
+            <div style={{ fontSize:16, fontWeight:600, marginBottom:4 }}>Generate Buysheet DATA Sheet</div>
+            <div style={{ color:C.sub, fontSize:13 }}>{(data?.summary?.total_os||0)+(data?.summary?.total_ppk||0)} rows · {data?.customers?.join(", ")}</div>
+          </div>
+
+          {missing > 0 && (
+            <div style={{ background:"#2D1B00", border:`1px solid ${C.amber}`, borderRadius:8,
+              padding:"12px 16px", marginBottom:20, fontSize:13, color:C.amber }}>
+              {missing} article line{missing===1?"":"s"} not in SAP yet (see ARTICLE CREATE). The buysheet includes them; create them before the PR file.
+            </div>
+          )}
+
+          <div style={{ display:"flex", gap:14, marginBottom:28, flexWrap:"wrap" }}>
+            {[
+              ["OS EXISTS",  data?.summary?.gen_exists||0, C.green],
+              ["PPK EXISTS", data?.summary?.ppk_exists||0, C.green],
+              ["MISSING",    missing,                      C.red],
+              ["PPK ISSUES", data?.summary?.ppk_issues||0, C.amber],
+            ].map(([label,count,color])=>(
+              <div key={label} style={{ background:C.card, border:`1px solid ${C.border}`,
+                borderRadius:8, padding:"16px 22px", minWidth:140 }}>
+                <div style={{ color:C.sub, fontSize:10, fontWeight:600, letterSpacing:1 }}>{label}</div>
+                <div style={{ fontSize:28, fontWeight:700, color: count>0?color:C.green, marginTop:4 }}>{count}</div>
+              </div>
+            ))}
+          </div>
+
+          {error && <div style={{ marginBottom:14, padding:"10px 14px", background:"#3B0000", color:C.red, borderRadius:6, fontSize:13 }}>{error}</div>}
+
+          <button onClick={download} disabled={!canGen||loading}
+            style={{ padding:"12px 32px", background:canGen?C.greenD:"#243450", color:"#fff",
+              border:"none", borderRadius:6, fontWeight:700, fontSize:15,
+              cursor:canGen?"pointer":"not-allowed", opacity:canGen?1:0.5 }}>
+            {loading ? "Generating…" : "Download Buysheet DATA →"}
+          </button>
+        </div>
+      );
+    }
+
+        function ReqsTab({ data }) {
+      const [err, setErr]   = React.useState("");
+      const [busy, setBusy] = React.useState(false);
+      const hasData = (data?.generic?.length || 0) + (data?.ppk?.length || 0) > 0;
+      const rows = [
+        ...(data?.generic||[]).map(r=>({ type:"OS",  article:r.style,       code:r.color_code, size:r.size, qty:r.qty, customer:r.customer, segment:r.segment, delivery:r.delivery, warehouse:r.warehouse, season:r.season, seasonSrc:r.season_src, inFile:r.status==="✓ EXISTS" })),
+        ...(data?.ppk||[]).map(r=>({     type:"PPK", article:r.ppk_article, code:r.color_code, size:"",     qty:r.qty, customer:r.customer, segment:r.segment, delivery:r.delivery, warehouse:r.warehouse, season:r.season, seasonSrc:r.season_src, inFile:r.exists==="✓ EXISTS", complex:!!r.complex })),
+      ];
+      if (!hasData) return (
+        <div style={{ textAlign:"center", padding:"80px 0", color:C.sub }}>
+          <div style={{ fontSize:32, marginBottom:12 }}>📄</div>
+          <div style={{ fontSize:16, fontWeight:500, marginBottom:6 }}>No data yet</div>
+          <div style={{ fontSize:13 }}>Run validation on the PREBUY tab first</div>
+        </div>
+      );
+
+      const nLines = rows.filter(r=>r.type==="OS" && r.inFile).length
+                   + rows.filter(r=>r.type==="PPK" && r.inFile && !r.complex).length                                                       // a prepack row is one line in the file
+                   + new Set(rows.filter(r=>r.type==="PPK" && r.inFile && r.complex).map(r=>[r.article, r.customer, r.delivery].join("|"))).size;   // a complex prepack's colors are one order: one line
+      const nLeft  = rows.filter(r=>!r.inFile).length;
+      const noSeason = rows.filter(r=>r.inFile && r.seasonSrc==="style number");
+
+      const dlCSV = async () => {
+        setErr(""); setBusy(true);
+        try {
+          const res = await fetch(`${API}/req_csv`);
+          if (!res.ok) {
+            const t = await res.text(); let m = t;
+            try { m = JSON.parse(t).error || t; } catch(e) {}
+            throw new Error(m);
+          }
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a"); a.href=url;
+          a.download = `PR_Upload_${new Date().toLocaleDateString("en-US").replace(/\//g,"-")}.csv`;
+          a.click();
+        } catch(e) { setErr(`PR file failed: ${e.message}`); }
+        finally { setBusy(false); }
+      };
+
+      return (
+        <div>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+            <div>
+              <div style={{ fontSize:16, fontWeight:600 }}>Purchase Requisition</div>
+              <div style={{ color:C.sub, fontSize:13, marginTop:2 }}>{nLines} line{nLines===1?"":"s"} in the file · {data?.customers?.join(", ")}</div>
+            </div>
+            <button onClick={dlCSV} disabled={busy} style={{ padding:"10px 22px", background:C.greenD, color:"#fff", opacity:busy?0.6:1,
+              border:"none", borderRadius:6, fontWeight:600, fontSize:14, cursor:busy?"wait":"pointer" }}>
+              {busy ? "Preparing…" : "Download PR CSV →"}
+            </button>
+          </div>
+          {err && <div style={{ marginBottom:14, padding:"10px 14px", background:"#3B0000", color:C.red, borderRadius:6, fontSize:13 }}>{err}</div>}
+          {nLeft > 0 && <div style={{ marginBottom:10, padding:"9px 14px", background:"#2D1B00", color:C.amber, borderRadius:6, fontSize:12 }}>{nLeft} line{nLeft===1?" is":"s are"} left out of the file: {nLeft===1?"its article is":"their articles are"} not in SAP yet. Create {nLeft===1?"it":"them"}, then download again.</div>}
+          {noSeason.length > 0 && <div style={{ marginBottom:10, padding:"9px 14px", background:"#2D1B00", color:C.amber, borderRadius:6, fontSize:12 }}>No season on the prebuy header, so SEASON is taken from the style number (for example {noSeason[0].article} gives {noSeason[0].season}). Add the season to the header, e.g. Q2 2027.</div>}
+
+          <div style={{ background:C.card, borderRadius:8, border:`1px solid ${C.border}`, overflow:"hidden" }}>
+            <div style={{ overflowX:"auto" }}>
+              <table>
+                <thead>
+                  <tr style={{ background:C.navy }}>
+                    {["Type","Article","Code","Size","Qty","Customer","Segment","Delivery","Warehouse","Season","In PR file"].map(h=>(
+                      <th key={h} style={{ padding:"9px 12px", color:C.sub, fontWeight:600, fontSize:11 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r,i)=>(
+                    <tr key={i} style={{ borderBottom:`1px solid ${C.border}`, background:i%2===0?C.card:"#162030" }}>
+                      <td style={{ padding:"8px 12px", fontSize:11, fontWeight:600, color:r.type==="PPK"?C.blue:C.sub }}>{r.type}</td>
+                       <td style={{ padding:"8px 12px", fontWeight:600 }}>{r.article}</td>
+                       <td style={{ padding:"8px 12px", color:C.sub }}>{r.code}</td>
+                       <td style={{ padding:"8px 12px" }}>{r.size || "—"}</td>
+                       <td style={{ padding:"8px 12px" }}>{r.qty?.toLocaleString()}</td>
+                       <td style={{ padding:"8px 12px", color:C.sub, fontSize:12 }}>{r.customer || "—"}</td>
+                       <td style={{ padding:"8px 12px", color:C.sub, fontSize:12 }}>{r.segment || "—"}</td>
+                       <td style={{ padding:"8px 12px", color:C.sub, fontSize:12 }}>{r.delivery || "—"}</td>
+                       <td style={{ padding:"8px 12px", color:C.sub, fontSize:12 }}>{r.warehouse || "—"}</td>
+                       <td style={{ padding:"8px 12px", color:C.sub, fontSize:12 }} title={r.seasonSrc==="header" ? "From the prebuy header" : "From the style number"}>{r.season || "—"}</td>
+                       <td style={{ padding:"8px 12px", fontSize:11, color:r.inFile ? C.green : C.amber }}>{r.inFile ? "yes" : "no - not in SAP"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const fmtD = (d) => /^\d{8}$/.test(d||"") ? `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}` : (d||"");
+    const fmtN = (n, dp=2) => (n===null||n===undefined||n==="") ? "" : Number(n).toLocaleString(undefined, { maximumFractionDigits:dp });
+
+    function PoCheckTab({ saved, setSaved }) {
+      const [q, setQ]           = React.useState(saved?.q || "");
+      const [res, setRes]       = React.useState(saved?.res || null);
+      const [err, setErr]       = React.useState("");
+      const [busy, setBusy]     = React.useState(false);
+      const [margin, setMargin] = React.useState(null);
+      const [onlyIssues, setOnlyIssues] = React.useState(false);
+      const [open, setOpen]     = React.useState({});
+      React.useEffect(() => { fetch(`${API}/margin`).then(r=>r.json()).then(setMargin).catch(()=>{}); }, []);
+      React.useEffect(() => { setSaved({ q, res }); }, [q, res]);
+
+      const lookup = async () => {
+        if (!q.trim()) return;
+        setBusy(true); setErr("");
+        try {
+          const r = await fetch(`${API}/lookup?q=${encodeURIComponent(q.trim())}`);
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || "Lookup failed");
+          setRes(j); setOpen({});
+        } catch (e) { setErr(e.message); setRes(null); }
+        setBusy(false);
+      };
+      const uploadMargin = async (file) => {
+        if (!file) return;
+        setErr(""); const form = new FormData(); form.append("file", file);
+        try {
+          const r = await fetch(`${API}/margin`, { method:"POST", body:form });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || "Margin file could not be read");
+          setMargin(j); if (q.trim() && res) lookup();
+        } catch (e) { setErr(e.message); }
+      };
+      const clearMargin = async () => { const j = await (await fetch(`${API}/margin/clear`, { method:"POST" })).json(); setMargin(j); if (q.trim() && res) lookup(); };
+
+      const lvlColor = { error:C.red, warn:C.amber, info:C.sub };
+      const worst = (it) => it.flags.some(f=>f.level==="error") ? "error" : it.flags.some(f=>f.level==="warn") ? "warn" : "ok";
+      const items = (res?.items||[]).filter(it => !onlyIssues || worst(it)!=="ok");
+      const cell = { padding:"8px 10px", fontSize:12, borderBottom:`1px solid ${C.border}`, verticalAlign:"top" };
+      const kv = (k, v) => <div style={{ display:"flex", gap:8, fontSize:12, padding:"2px 0" }}><span style={{ color:C.sub, minWidth:150 }}>{k}</span><span style={{ color:C.text }}>{v===""||v===null||v===undefined ? <span style={{ color:C.red }}>(blank)</span> : v}</span></div>;
+
+      return (
+        <div style={{ padding:"4px 0" }}>
+          <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap", marginBottom:12 }}>
+            <input value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>{ if (e.key==="Enter") lookup(); }} placeholder="PO or requisition number"
+              style={{ background:C.card, color:C.text, border:`1px solid ${C.border}`, borderRadius:6, padding:"9px 12px", fontSize:14, width:240 }}/>
+            <button onClick={lookup} disabled={busy||!q.trim()} style={{ background:C.blue, color:"#fff", border:"none", borderRadius:6, padding:"9px 18px", fontWeight:600, cursor:"pointer" }}>{busy ? "Pulling from SAP…" : "Pull from SAP"}</button>
+            <label style={{ background:C.card, color:C.text, border:`1px solid ${C.border}`, borderRadius:6, padding:"9px 14px", fontSize:13, cursor:"pointer" }}>
+              {margin?.loaded ? "Replace margin file" : "Drop in margin file"}
+              <input type="file" accept=".xlsx,.xlsm" style={{ display:"none" }} onChange={e=>{ uploadMargin(e.target.files[0]); e.target.value=""; }}/>
+            </label>
+            {margin?.loaded && <button onClick={clearMargin} style={{ background:"transparent", color:C.sub, border:`1px solid ${C.border}`, borderRadius:6, padding:"9px 12px", cursor:"pointer" }}>Clear margin</button>}
+          </div>
+          <div style={{ fontSize:12, color:C.sub, marginBottom:12 }}>
+            {margin?.loaded
+              ? `Margin file: ${margin.filename||margin.sheet} · ${margin.rows} rows · ${margin.styles} styles · ${margin.with_req} rows have a REQ# · ${margin.with_po} rows have a PO# · ${Object.entries(margin.terms||{}).map(([t,n])=>`${t||"(no term)"} ${n}`).join(", ")}`
+              : "No margin file loaded: only the SAP-side checks run (PO vs requisition, HTS, fiber, blanks)."}
+          </div>
+          {err && <div style={{ background:"#3B0000", color:"#FCA5A5", padding:"10px 14px", borderRadius:6, marginBottom:12, fontSize:13 }}>{err}</div>}
+          {res && (
+            <div>
+              <div style={{ display:"flex", gap:16, alignItems:"center", flexWrap:"wrap", marginBottom:10, fontSize:13 }}>
+                <span style={{ color:C.text, fontWeight:600 }}>{res.kind==="po" ? "PO" : "Requisition"} {res.number}</span>
+                <span style={{ color:C.sub }}>POs: {res.pos.join(", ")||"none"} · Reqs: {res.reqs.join(", ")||"none"}</span>
+                <span style={{ color:C.red }}>{res.summary.error} errors</span>
+                <span style={{ color:C.amber }}>{res.summary.warn} warnings</span>
+                <span style={{ color:C.green }}>{res.summary.clean} of {res.summary.items} lines clean</span>
+                <label style={{ color:C.sub }}><input type="checkbox" checked={onlyIssues} onChange={e=>setOnlyIssues(e.target.checked)}/> only lines with issues</label>
+              </div>
+              {res.notes.map((n,i)=><div key={i} style={{ color:C.amber, fontSize:12, marginBottom:4 }}>{n}</div>)}
+              <div style={{ color:C.sub, fontSize:12, marginBottom:8 }}>{res.margin_note}{res.margin_only?.length ? ` Styles in the margin rows but not on this ${res.kind==="po"?"PO":"requisition"}: ${res.margin_only.join(", ")}.` : ""}</div>
+              <div style={{ overflowX:"auto", border:`1px solid ${C.border}`, borderRadius:8 }}>
+                <table style={{ width:"100%", borderCollapse:"collapse", color:C.text }}>
+                  <thead><tr style={{ background:C.panel, color:C.sub, fontSize:11, textAlign:"left" }}>
+                    {["","PO / item","Req / item","Article","Req pc","PO pc","FOB","First sale","Base duty / Duty / US tariff","HTS","Req date","PO delivery","Ex-factory","Issues"].map(h=><th key={h} style={{ padding:"8px 10px", whiteSpace:"nowrap" }}>{h}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {items.map((it, ix) => {
+                      const k = `${it.po}-${it.po_item}-${it.req}-${it.req_item}-${ix}`, w = worst(it);
+                      return (
+                        <React.Fragment key={k}>
+                          <tr onClick={()=>setOpen(o=>({ ...o, [k]:!o[k] }))} style={{ cursor:"pointer" }}>
+                            <td style={{ ...cell, color:w==="error"?C.red:w==="warn"?C.amber:C.green, fontWeight:700 }}>{w==="error"?"✗":w==="warn"?"!":"✓"}</td>
+                            <td style={cell}>{it.po ? `${it.po} / ${it.po_item}` : "-"}</td>
+                            <td style={cell}>{it.req ? `${it.req} / ${it.req_item}` : "-"}</td>
+                            <td style={cell}>{it.article}<div style={{ color:C.sub, fontSize:11 }}>{it.desc}</div></td>
+                            <td style={cell}>{fmtN(it.req_qty_pc,0)}</td>
+                            <td style={cell}>{fmtN(it.po_qty_pc,0)}{it.other_po_qty_pc ? <div style={{ color:C.amber, fontSize:11 }}>+{fmtN(it.other_po_qty_pc,0)} other POs</div> : null}</td>
+                            <td style={cell}>{fmtN(it.fob_pc)}</td>
+                            <td style={cell}>{fmtN(it.zfs1)}</td>
+                            <td style={cell}>{[it.zcsr, it.zcst, it.ztrf].map(v=>v===null?"-":fmtN(v,2)+"%").join(" / ")}</td>
+                            <td style={cell}>{it.hts_master}{it.hts_po && it.hts_po!==it.hts_master ? <div style={{ color:C.red }}>PO {it.hts_po}</div> : null}</td>
+                            <td style={cell}>{fmtD(it.req_date)}</td>
+                            <td style={cell}>{fmtD(it.po_delivery)}</td>
+                            <td style={cell}>{fmtD(it.ex_factory)}</td>
+                            <td style={cell}>{it.flags.filter(f=>f.level!=="info").length || ""}</td>
+                          </tr>
+                          {open[k] && (
+                            <tr><td colSpan={14} style={{ ...cell, background:C.panel }}>
+                              {it.flags.map((f,i)=><div key={i} style={{ color:lvlColor[f.level], fontSize:12, padding:"2px 0" }}>{f.level.toUpperCase()}: {f.msg}</div>)}
+                              <div style={{ display:"flex", gap:40, flexWrap:"wrap", marginTop:8 }}>
+                                <div>
+                                  {kv("PO type", `${it.po_type} ${it.po_type_text}`)}
+                                  {kv("Vendor / factory", `${it.vendor} / ${it.factory}`)}
+                                  {kv("Storage PO / req", `${it.storage_po} / ${it.storage_req}`)}
+                                  {kv("Unit / pc per pac", `${it.unit} / ${it.pc_per_pac ?? ""}`)}
+                                  {kv("HTS article master", it.hts_master)}
+                                  {kv("HTS on PO", it.hts_po)}
+                                  {kv("Dispatch / trading ctry", `${it.dispatch} / ${it.trading}`)}
+                                  {kv("Fiber (SAP)", it.fiber)}
+                                  {it.set_components.length>0 && kv("Set components", it.set_components.map(c=>`${c.code||"(blank)"} ${c.desc} fob ${c.fob ?? ""} 1st ${c.first_sale ?? ""}`).join(" | "))}
+                                </div>
+                                <div>
+                                  <div style={{ color:C.sub, fontSize:11, marginBottom:4 }}>DELIVERY SCHEDULE</div>
+                                  {it.sched.length ? it.sched.map(s=><div key={s.line} style={{ fontSize:12 }}>line {s.line}: {fmtN(s.qty_pc,0)} pc · ex-factory {fmtD(s.ex_factory)} · ETD {fmtD(s.etd)} · ETA {fmtD(s.eta)} · delivery {fmtD(s.delivery)}</div>) : <div style={{ fontSize:12, color:C.amber }}>no schedule line</div>}
+                                </div>
+                                {it.margin?.rows>0 && (
+                                  <div>
+                                    <div style={{ color:C.sub, fontSize:11, marginBottom:4 }}>MARGIN FILE ({it.margin.rows} rows, sheet rows {it.margin.rows_at?.join(", ")})</div>
+                                    {kv("FINAL PO FOB", it.margin.fob?.join(", "))}
+                                    {kv("Term", it.margin.term?.join(", "))}
+                                    {kv("First sale", it.margin.first_sale?.join(", "))}
+                                    {kv("Duty rate", it.margin.duty_rate?.join(", "))}
+                                    {kv("COO", it.margin.coo?.join(", "))}
+                                    {kv("Fabrication", it.margin.fabrication?.join(" | "))}
+                                    {it.margin.qty!==undefined && kv("Style qty", fmtN(it.margin.qty,0))}
+                                  </div>
+                                )}
+                              </div>
+                            </td></tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {!res && !err && <div style={{ textAlign:"center", padding:"60px 0", color:C.sub, fontSize:13 }}>Enter a PO or requisition number to pull both from SAP and compare them.</div>}
+        </div>
+      );
+    }
+
+    function HistoryTab() {
+      return (
+        <div style={{ textAlign:"center", padding:"80px 0", color:C.sub }}>
+          <div style={{ fontSize:32, marginBottom:12 }}>🕒</div>
+          <div style={{ fontSize:16, fontWeight:500, marginBottom:6 }}>History coming soon</div>
+          <div style={{ fontSize:13 }}>Past validation runs will appear here</div>
+        </div>
+      );
+    }
+
+    function App() {
+      const [tab, setTab]   = useState("PREBUY");
+      const [data, setData] = useState(null);
+      const [chk, setChk]   = useState(null);     // PO CHECK tab keeps its last lookup while you visit other tabs
+      const [serverBuild, setServerBuild] = useState(undefined);   // undefined = still asking
+      React.useEffect(() => {
+        fetch(`${API}/health`).then(r=>r.json()).then(j=>setServerBuild(j.build || null)).catch(()=>setServerBuild("unreachable"));
+      }, []);
+      const buildMismatch = serverBuild !== undefined && serverBuild !== PAGE_BUILD;
+      const nOS  = data?.summary?.total_os  || 0;
+      const nPPK = data?.summary?.total_ppk || 0;
+
+      return (
+        <div style={{ minHeight:"100vh", background:C.bg }}>
+          {/* Header */}
+          <div style={{ background:C.panel, borderBottom:`1px solid ${C.border}`, padding:"14px 32px",
+            display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <div>
+              <div style={{ fontWeight:700, fontSize:16, color:C.text }}>
+                {data?.filename
+                  ? data.filename.replace(/\.[^.]+$/, '').replace(/_/g,' ')
+                  : "Buysheet Portal"}
+              </div>
+              <div style={{ color:C.sub, fontSize:11, marginTop:1 }}>Your Company · Article Operations</div>
+              <div style={{ fontSize:10, marginTop:2, color: buildMismatch ? "#F59E0B" : C.sub }}>
+                page {PAGE_BUILD} · server {serverBuild===undefined ? "…" : serverBuild===null ? "OLD (no build stamp)" : serverBuild}
+                {" · "}<a href={`${API}/diagnostics`} target="_blank" rel="noreferrer" style={{ color:C.blue }}>diagnostics</a>
+              </div>
+            </div>
+            {data && (
+              <div style={{ display:"flex", gap:8 }}>
+                {[["TOTAL",nOS+nPPK,C.text],
+                  ["PPK",nPPK,C.blue],
+                  ["OS",nOS,C.sub]].map(([k,v,color])=>(
+                  <div key={k} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:6,
+                    padding:"6px 14px", textAlign:"center" }}>
+                    <div style={{ color:C.sub, fontSize:10, fontWeight:600 }}>{k}</div>
+                    <div style={{ color, fontWeight:700, fontSize:16 }}>{v}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {buildMismatch && (
+            <div style={{ background:"#2D1B00", borderBottom:"1px solid #92400E", color:"#F59E0B", padding:"10px 32px", fontSize:13 }}>
+              {serverBuild==="unreachable"
+                ? "Cannot reach the server - is server.py running?"
+                : `This page (${PAGE_BUILD}) and the server (${serverBuild===null ? "old build" : serverBuild}) are from different builds. Copy BOTH server.py and portal.html into SAP TOOLS, stop the server with Ctrl+C and start it again.`}
+            </div>
+          )}
+
+          <div style={{ maxWidth:1400, margin:"0 auto", padding:"24px", display:"flex", gap:24 }}>
+
+            {/* Permanent left sidebar — ROW COUNTS */}
+            <div style={{ width:180, flexShrink:0 }}>
+              <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"16px" }}>
+                <div style={{ color:C.sub, fontSize:10, fontWeight:600, letterSpacing:1, marginBottom:12 }}>ROW COUNTS</div>
+                {[
+                  ["TOTAL",  nOS+nPPK],
+                  ["PPK",    nPPK],
+                  ["OS",     nOS],
+                  ["ECOM",   0],
+                ].map(([k,v])=>(
+                  <div key={k} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                    padding:"8px 0", borderBottom:`1px solid ${C.border}` }}>
+                    <span style={{ color:C.sub, fontSize:13 }}>{k}</span>
+                    <span style={{ fontWeight:700, fontSize:15 }}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Main content */}
+            <div style={{ flex:1, minWidth:0 }}>
+              <TabBar active={tab} onChange={setTab}/>
+              {tab==="PREBUY"         && <BuysheetTab data={data} setData={setData}/>}
+              {tab==="ARTICLE CREATE" && <ArticleCreateTab data={data}/>}
+              {tab==="DELIVERY FLOW"  && <DeliveryFlowTab/>}
+              {tab==="BUYSHEET DATA"  && <BuysheetDataTab data={data}/>}
+              {tab==="REQS"           && <ReqsTab data={data}/>}
+              {tab==="PO CHECK"       && <PoCheckTab saved={chk} setSaved={setChk}/>}
+
+            </div>
+
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+  </script>
+</body>
+</html>
